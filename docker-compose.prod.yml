@@ -1,0 +1,152 @@
+# ==============================================================================
+# Sentinel AI — Production Multi-Container Orchestration
+# ==============================================================================
+services:
+  # Optional local PostgreSQL service for offline self-hosted deployments.
+  # When using managed Supabase Cloud, omit this service (default profile).
+  postgres:
+    profiles: ["local-db"]
+    image: postgres:15-alpine
+    container_name: sentinel_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${FRAUD_DB_USER:-fraud_user}
+      POSTGRES_PASSWORD: ${FRAUD_DB_PASSWORD:-fraud_password}
+      POSTGRES_DB: ${FRAUD_DB_NAME:-fraud_db}
+    ports:
+      - "127.0.0.1:${FRAUD_DB_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${FRAUD_DB_USER:-fraud_user} -d ${FRAUD_DB_NAME:-fraud_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: sentinel_kafka
+    restart: always
+    ports:
+      - "127.0.0.1:9092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://127.0.0.1:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-cluster.sh cluster-id --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  init-kafka:
+    image: apache/kafka:3.7.0
+    container_name: sentinel_init_kafka
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: [ "/bin/sh", "-c" ]
+    command: >
+      sh -c "
+      echo 'Waiting for Kafka readiness and verifying topic transactions-canonical...' &&
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic transactions-canonical --partitions 3 --replication-factor 1 &&
+      echo 'Topic transactions-canonical created/verified successfully:' &&
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --describe --topic transactions-canonical
+      "
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: sentinel_api
+    restart: always
+    depends_on:
+      kafka:
+        condition: service_healthy
+      init-kafka:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      ENVIRONMENT: production
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET}
+      SUPABASE_JWT_ALGORITHM: ${SUPABASE_JWT_ALGORITHM:-HS256}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${FRAUD_DB_USER:-fraud_user}:${FRAUD_DB_PASSWORD:-fraud_password}@postgres:5432/${FRAUD_DB_NAME:-fraud_db}}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: transactions-canonical
+      KAFKA_CANONICAL_TOPIC: transactions-canonical
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+    volumes:
+      - sentinel_logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  streaming:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+    container_name: sentinel_streaming_worker
+    restart: always
+    depends_on:
+      kafka:
+        condition: service_healthy
+      init-kafka:
+        condition: service_completed_successfully
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${FRAUD_DB_USER:-fraud_user}:${FRAUD_DB_PASSWORD:-fraud_password}@postgres:5432/${FRAUD_DB_NAME:-fraud_db}}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: transactions-canonical
+      KAFKA_CANONICAL_TOPIC: transactions-canonical
+      SPARK_CHECKPOINT_DIR: /var/lib/sentinel/checkpoints
+      SPARK_MASTER: local[2]
+      SPARK_DRIVER_MEMORY: 2g
+    volumes:
+      - spark_checkpoints:/var/lib/sentinel/checkpoints
+      - sentinel_logs:/app/logs
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: sentinel_web
+    restart: always
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      NODE_ENV: production
+      INTERNAL_API_URL: http://api:8000
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/login || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  postgres_data:
+  kafka_data:
+  spark_checkpoints:
+  sentinel_logs:

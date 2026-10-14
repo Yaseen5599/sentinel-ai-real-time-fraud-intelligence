@@ -1,0 +1,47 @@
+# ==============================================================================
+# Sentinel AI — Production PySpark Streaming Worker Dockerfile
+# Includes packaged Kafka connector JARs and durable checkpoint support
+# ==============================================================================
+FROM python:3.11-slim-bookworm
+
+WORKDIR /app
+
+# Install OpenJDK 17 runtime for PySpark Structured Streaming
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-17-jre-headless \
+    procps \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ln -sfn $(ls -d /usr/lib/jvm/java-17-openjdk-* 2>/dev/null | head -n 1) /usr/lib/jvm/java-17-default
+ENV JAVA_HOME=/usr/lib/jvm/java-17-default
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+COPY requirements-streaming.txt .
+RUN pip install --no-cache-dir -r requirements-streaming.txt
+
+# Create unprivileged spark user
+RUN groupadd -g 10001 sparkgroup && \
+    useradd -u 10001 -g sparkgroup -m -s /bin/bash sparkuser
+
+# Create directories for offline connector jars, durable checkpoints, and logs
+RUN mkdir -p /opt/spark/jars /var/lib/sentinel/checkpoints /app/logs && \
+    chown -R sparkuser:sparkgroup /opt/spark/jars /var/lib/sentinel/checkpoints /app/logs
+
+# Package Kafka connector JARs directly into image for air-gapped / offline startup
+COPY jars/ /opt/spark/jars/
+RUN chown -R sparkuser:sparkgroup /opt/spark/jars
+
+ENV SPARK_JARS="/opt/spark/jars/spark-sql-kafka-0-10_2.13-4.2.0.jar,/opt/spark/jars/spark-token-provider-kafka-0-10_2.13-4.2.0.jar,/opt/spark/jars/kafka-clients-3.9.0.jar,/opt/spark/jars/commons-pool2-2.12.0.jar"
+ENV SPARK_CHECKPOINT_DIR=/var/lib/sentinel/checkpoints
+ENV PYTHONPATH=/app
+
+# Copy application code and model artifacts
+COPY --chown=sparkuser:sparkgroup src/ /app/src/
+COPY --chown=sparkuser:sparkgroup config/ /app/config/
+COPY --chown=sparkuser:sparkgroup models/ /app/models/
+COPY --chown=sparkuser:sparkgroup data/ /app/data/
+
+USER sparkuser
+
+CMD ["python", "src/streaming/spark_streaming_pipeline.py"]

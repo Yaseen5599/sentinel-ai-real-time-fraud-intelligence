@@ -1,0 +1,94 @@
+{
+  "model_version": "canonical-rf-v1.0",
+  "trained_at": "2026-10-09T15:06:01.195605+00:00",
+  "total_records": 12636,
+  "train_records": 10108,
+  "test_records": 2528,
+  "features": [
+    "amount",
+    "log_amount",
+    "hour_sin",
+    "hour_cos",
+    "day_of_week",
+    "is_weekend",
+    "velocity_1m",
+    "velocity_5m",
+    "velocity_24h",
+    "spend_velocity_24h",
+    "amount_to_avg_ratio",
+    "amount_z_score",
+    "distance_from_last_km",
+    "speed_kmh",
+    "is_new_merchant",
+    "is_new_location",
+    "mcc_risk_weight",
+    "channel_risk_weight"
+  ],
+  "feature_importances": {
+    "mcc_risk_weight": 0.2757,
+    "channel_risk_weight": 0.2555,
+    "velocity_5m": 0.125,
+    "velocity_1m": 0.0779,
+    "amount": 0.0649,
+    "amount_to_avg_ratio": 0.0619,
+    "log_amount": 0.0595,
+    "speed_kmh": 0.0244,
+    "distance_from_last_km": 0.024,
+    "amount_z_score": 0.0216,
+    "velocity_24h": 0.0038,
+    "spend_velocity_24h": 0.0022,
+    "hour_sin": 0.0011,
+    "hour_cos": 0.0009,
+    "is_new_merchant": 0.0008,
+    "is_new_location": 0.0004,
+    "day_of_week": 0.0003,
+    "is_weekend": 0.0001
+  },
+  "metrics": {
+    "temporal_benchmark": {
+      "random_forest": {
+        "model": "Canonical Random Forest (Temporal)",
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1_score": 1.0,
+        "pr_auc": 1.0,
+        "fp_per_1000": 0.0,
+        "total_cost": 0.0,
+        "tp": 99,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2429
+      },
+      "isolation_forest": {
+        "model": "Canonical Isolation Forest (Temporal)",
+        "precision": 0.6455,
+        "recall": 0.7172,
+        "f1_score": 0.6794,
+        "pr_auc": 0.7677,
+        "fp_per_1000": 15.43,
+        "total_cost": 14585.0,
+        "tp": 71,
+        "fp": 39,
+        "fn": 28,
+        "tn": 2390
+      }
+    },
+    "cardholder_disjoint_benchmark": {
+      "random_forest": {
+        "model": "Canonical RF (Cardholder Disjoint)",
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1_score": 1.0,
+        "pr_auc": 1.0,
+        "fp_per_1000": 0.0,
+        "total_cost": 0.0,
+        "tp": 63,
+        "fp": 0,
+        "fn": 0,
+        "tn": 2493
+      },
+      "train_cards_count": 24,
+      "test_cards_count": 6
+    }
+  }
+}

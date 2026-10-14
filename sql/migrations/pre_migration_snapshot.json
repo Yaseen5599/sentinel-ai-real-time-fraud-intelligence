@@ -1,0 +1,105 @@
+{
+  "target_db": "postgres@aws-0-ap-northeast-2.pooler.supabase.com (ixrwbfvsoqkxzmnfsuuq)",
+  "counts": {
+    "transactions": 36,
+    "fraud_predictions": 36,
+    "fraud_investigations": 15,
+    "confirmed_fraud_outcomes": 3,
+    "investigation_audit_logs": 22,
+    "cardholders": 0,
+    "merchants": 0
+  },
+  "policies": [
+    {
+      "table": "cardholders",
+      "policy": "rbac_select_cardholders",
+      "cmd": "SELECT",
+      "qual": "((CURRENT_USER = 'service_role'::name) OR (CURRENT_USER = 'postgres'::name) OR ((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = ANY (ARRAY['admin'::text, 'fraud_investigator'::text])) OR (((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = 'customer'::text) AND ((card_id)::text = (((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'card_id'::text))))",
+      "with_check": null
+    },
+    {
+      "table": "confirmed_fraud_outcomes",
+      "policy": "rbac_select_outcomes",
+      "cmd": "SELECT",
+      "qual": "((CURRENT_USER = 'service_role'::name) OR (CURRENT_USER = 'postgres'::name) OR ((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = ANY (ARRAY['admin'::text, 'fraud_investigator'::text])))",
+      "with_check": null
+    },
+    {
+      "table": "confirmed_fraud_outcomes",
+      "policy": "service_insert_outcomes",
+      "cmd": "INSERT",
+      "qual": null,
+      "with_check": "((CURRENT_USER = 'service_role'::name) OR (CURRENT_USER = 'postgres'::name) OR ((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = ANY (ARRAY['admin'::text, 'fraud_investigator'::text])))"
+    },
+    {
+      "table": "fraud_investigations",
+      "policy": "rbac_select_investigations",
+      "cmd": "SELECT",
+      "qual": "((CURRENT_USER = 'service_role'::name) OR (CURRENT_USER = 'postgres'::name) OR ((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = ANY (ARRAY['admin'::text, 'fraud_investigator'::text])))",
+      "with_check": null
+    },
+    {
+      "table": "fraud_investigations",
+      "policy": "rbac_update_investigations",
+      "cmd": "UPDATE",
+      "qual": "((CURRENT_USER = 'service_role'::name) OR (CURRENT_USER = 'postgres'::name) OR ((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = ANY (ARRAY['admin'::text, 'fraud_investigator'::text])))",
+      "with_check": "((CURRENT_USER = 'service_role'::name) OR (CURRENT_USER = 'postgres'::name) OR ((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = ANY (ARRAY['admin'::text, 'fraud_investigator'::text])))"
+    },
+    {
+      "table": "fraud_investigations",
+      "policy": "service_insert_investigations",
+      "cmd": "INSERT",
+      "qual": null,
+      "with_check": "((CURRENT_USER = 'service_role'::name) OR (CURRENT_USER = 'postgres'::name) OR ((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = ANY (ARRAY['admin'::text, 'fraud_investigator'::text])))"
+    },
+    {
+      "table": "fraud_predictions",
+      "policy": "rbac_select_predictions",
+      "cmd": "SELECT",
+      "qual": "((CURRENT_USER = 'service_role'::name) OR (CURRENT_USER = 'postgres'::name) OR ((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = ANY (ARRAY['admin'::text, 'fraud_investigator'::text])))",
+      "with_check": null
+    },
+    {
+      "table": "fraud_predictions",
+      "policy": "service_insert_predictions",
+      "cmd": "INSERT",
+      "qual": null,
+      "with_check": "((CURRENT_USER = 'service_role'::name) OR (CURRENT_USER = 'postgres'::name) OR ((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = ANY (ARRAY['admin'::text, 'fraud_investigator'::text])))"
+    },
+    {
+      "table": "investigation_audit_logs",
+      "policy": "rbac_select_audit_logs",
+      "cmd": "SELECT",
+      "qual": "((CURRENT_USER = 'service_role'::name) OR (CURRENT_USER = 'postgres'::name) OR ((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = ANY (ARRAY['admin'::text, 'fraud_investigator'::text])))",
+      "with_check": null
+    },
+    {
+      "table": "investigation_audit_logs",
+      "policy": "service_insert_audit_logs",
+      "cmd": "INSERT",
+      "qual": null,
+      "with_check": "((CURRENT_USER = 'service_role'::name) OR (CURRENT_USER = 'postgres'::name) OR ((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = ANY (ARRAY['admin'::text, 'fraud_investigator'::text])))"
+    },
+    {
+      "table": "merchants",
+      "policy": "rbac_select_merchants",
+      "cmd": "SELECT",
+      "qual": "((CURRENT_USER = 'service_role'::name) OR (CURRENT_USER = 'postgres'::name) OR ((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = ANY (ARRAY['admin'::text, 'fraud_investigator'::text, 'customer'::text])))",
+      "with_check": null
+    },
+    {
+      "table": "transactions",
+      "policy": "rbac_select_transactions",
+      "cmd": "SELECT",
+      "qual": "((CURRENT_USER = 'service_role'::name) OR (CURRENT_USER = 'postgres'::name) OR ((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = ANY (ARRAY['admin'::text, 'fraud_investigator'::text])) OR (((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = 'customer'::text) AND ((card_id)::text = (((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'card_id'::text))))",
+      "with_check": null
+    },
+    {
+      "table": "transactions",
+      "policy": "service_insert_transactions",
+      "cmd": "INSERT",
+      "qual": null,
+      "with_check": "((CURRENT_USER = 'service_role'::name) OR (CURRENT_USER = 'postgres'::name) OR ((((NULLIF(current_setting('request.jwt.claims'::text, true), ''::text))::jsonb -> 'app_metadata'::text) ->> 'role'::text) = ANY (ARRAY['admin'::text, 'fraud_investigator'::text])))"
+    }
+  ]
+}
