@@ -18,7 +18,8 @@ import {
   ExternalLink,
   RefreshCw,
   CheckCircle2,
-  Filter
+  Filter,
+  X
 } from 'lucide-react'
 import { AppShell } from '../components/AppShell'
 import { useAuth } from '../lib/AuthContext'
@@ -45,6 +46,11 @@ export default function AuthorityConsolePage() {
   const [isSimulating, setIsSimulating] = useState(false)
   const [activeScenario, setActiveScenario] = useState<string | null>(null)
   const [routeViaKafka, setRouteViaKafka] = useState(false)
+  const [simulationFeedback, setSimulationFeedback] = useState<{
+    type: 'success' | 'error'
+    message: string
+    details?: string
+  } | null>(null)
 
   const fetchTelemetry = useCallback(async () => {
     try {
@@ -101,13 +107,29 @@ export default function AuthorityConsolePage() {
   }, [fetchTelemetry])
 
   const handleSimulate = async (scenario: string, count: number = 5) => {
+    if (isSimulating) return
     setIsSimulating(true)
     setActiveScenario(scenario)
+    setSimulationFeedback(null)
     try {
-      await api.post('/api/v1/simulate', { scenario, count, publish_to_kafka: routeViaKafka })
+      const res: any = await api.post('/api/v1/simulate', { scenario, count, publish_to_kafka: routeViaKafka })
+      setSimulationFeedback({
+        type: 'success',
+        message: res.message || `Scenario ${scenario} executed successfully.`,
+        details: res.route === 'kafka'
+          ? `Published ${res.transactions_published} transaction(s) to Kafka topic for Spark Structured Streaming.`
+          : `Processed & persisted ${res.persisted_count ?? res.transactions_published ?? 0} transaction(s) through canonical ML & rule pipeline.`
+      })
       await fetchTelemetry()
-    } catch (err) {
+    } catch (err: any) {
       console.error('Simulation error:', err)
+      setSimulationFeedback({
+        type: 'error',
+        message: err.detail || err.message || 'Simulation execution failed.',
+        details: err.status === 503
+          ? 'Kafka cluster or topic is currently unreachable. Direct pipeline fallback can be used by unchecking Route via Kafka.'
+          : undefined
+      })
     } finally {
       setIsSimulating(false)
       setActiveScenario(null)
@@ -249,8 +271,9 @@ export default function AuthorityConsolePage() {
               <input
                 type="checkbox"
                 checked={routeViaKafka}
+                disabled={isSimulating}
                 onChange={(e) => setRouteViaKafka(e.target.checked)}
-                className="rounded border-surface-border text-brand-600 focus:ring-0"
+                className="rounded border-surface-border text-brand-600 focus:ring-0 disabled:opacity-50"
               />
               <span className="font-mono text-[11px]">
                 Route via Kafka <span className="text-purple-600 font-semibold">(canonical)</span>
@@ -299,6 +322,35 @@ export default function AuthorityConsolePage() {
             )
           })}
         </div>
+
+        {simulationFeedback && (
+          <div className={`mt-3 p-3 rounded-lg border text-xs flex items-start justify-between gap-2 transition-all ${
+            simulationFeedback.type === 'success'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+              : 'bg-rose-50 border-rose-200 text-rose-900'
+          }`}>
+            <div className="flex items-start gap-2.5">
+              {simulationFeedback.type === 'success' ? (
+                <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+              ) : (
+                <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+              )}
+              <div>
+                <strong className="font-semibold block">{simulationFeedback.message}</strong>
+                {simulationFeedback.details && (
+                  <span className="text-[11px] opacity-90 block mt-0.5">{simulationFeedback.details}</span>
+                )}
+              </div>
+            </div>
+            <button
+              onClick={() => setSimulationFeedback(null)}
+              className="text-ink-muted hover:text-ink text-xs p-1"
+              aria-label="Dismiss feedback"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Two Column Section: Recent Flagged Incidents & Investigation Summary */}

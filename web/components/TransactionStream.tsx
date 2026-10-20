@@ -36,6 +36,10 @@ export interface TransactionRecord {
   processing_latency_ms?: number | null
   case_id?: string
   investigation_status?: string
+  authorization_status?: 'PENDING' | 'AUTHORIZED' | 'DECLINED' | string
+  authorized_by?: string | null
+  authorized_at?: string | null
+  ingested_at?: string | null
 }
 
 interface TransactionStreamProps {

@@ -272,10 +272,12 @@ class DatabaseClient:
         city = record.get("city") or record.get("location", "Unknown")
         channel = record.get("channel", "ONLINE_ECOMMERCE")
         currency = record.get("currency", "USD")
-        auth_status = record.get("authorization_status", "AUTHORIZED")
+        auth_status = record.get("authorization_status") or "PENDING"
         lat = record.get("latitude")
         lon = record.get("longitude")
         raw_ts = record.get("timestamp", datetime.now(timezone.utc).isoformat())
+        now_iso = datetime.now(timezone.utc).isoformat()
+        ingested_at = record.get("ingested_at") or now_iso
 
         ml_score = float(record.get("ml_score", 0.0))
         beh_score = float(record.get("behavior_score", 0.0))
@@ -295,11 +297,16 @@ class DatabaseClient:
             "currency": currency,
             "channel": channel,
             "merchant": merchant_name,
+            "merchant_name": merchant_name,
             "location": city,
+            "city": city,
             "latitude": lat,
             "longitude": lon,
             "timestamp": raw_ts,
+            "ingested_at": ingested_at,
             "authorization_status": auth_status,
+            "authorized_by": record.get("authorized_by"),
+            "authorized_at": record.get("authorized_at"),
             "ml_score": ml_score,
             "behavior_score": beh_score,
             "rule_score": rule_score,
@@ -318,6 +325,10 @@ class DatabaseClient:
             )
             if not already_in_mem:
                 self._memory_transactions.insert(0, mem_rec)
+                self._memory_transactions.sort(
+                    key=lambda t: (t.get("ingested_at") or t.get("timestamp") or "", t.get("transaction_id") or ""),
+                    reverse=True
+                )
                 if len(self._memory_transactions) > 2000:
                     self._memory_transactions.pop()
 
@@ -343,8 +354,12 @@ class DatabaseClient:
                             "assigned_analyst_id": None,
                             "analyst_decision": "PENDING",
                             "analyst_notes": None,
-                            "opened_at": raw_ts
+                            "opened_at": now_iso
                         })
+                        self._memory_cases.sort(
+                            key=lambda c: (c.get("opened_at") or "", c.get("case_id") or ""),
+                            reverse=True
+                        )
 
         # Database writes
         try:
@@ -458,13 +473,13 @@ class DatabaseClient:
         }
 
     def get_recent_transactions(self, limit: int = 50, flagged_only: bool = False) -> List[Dict[str, Any]]:
-        """Retrieve recent scored transactions."""
+        """Retrieve recent scored transactions, sorted newest-first deterministically."""
         try:
             filter_clause = "WHERE fraud_decision IN ('FRAUD', 'SUSPICIOUS')" if flagged_only else ""
             sql = f"""
             SELECT * FROM v_enriched_transactions
             {filter_clause}
-            ORDER BY timestamp DESC
+            ORDER BY COALESCE(ingested_at, timestamp) DESC, transaction_id DESC
             LIMIT {limit};
             """
             with self.get_connection() as conn:
@@ -480,10 +495,14 @@ class DatabaseClient:
             t for t in self._memory_transactions
             if (not flagged_only or t.get("fraud_decision") in ["FRAUD", "SUSPICIOUS"])
         ]
+        filtered.sort(
+            key=lambda t: (t.get("ingested_at") or t.get("timestamp") or "", t.get("transaction_id") or ""),
+            reverse=True
+        )
         return filtered[:limit]
 
     def get_cases(self, status: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
-        """Retrieve open/investigated fraud cases."""
+        """Retrieve open/investigated fraud cases, sorted newest-first deterministically."""
         try:
             status_clause = f"WHERE i.status = '{status}'" if status else ""
             sql = f"""
@@ -510,9 +529,9 @@ class DatabaseClient:
                 i.resolved_at
             FROM fraud_investigations i
             JOIN transactions t ON i.transaction_id = t.transaction_id
-            JOIN fraud_predictions p ON i.transaction_id = p.transaction_id
+            LEFT JOIN fraud_predictions p ON i.transaction_id = p.transaction_id
             {status_clause}
-            ORDER BY i.opened_at DESC
+            ORDER BY i.opened_at DESC, i.case_id DESC
             LIMIT {limit};
             """
             with self.get_connection() as conn:
@@ -524,6 +543,10 @@ class DatabaseClient:
             self.is_connected = False
 
         filtered = [c for c in self._memory_cases if (not status or c.get("status") == status)]
+        filtered.sort(
+            key=lambda c: (c.get("opened_at") or "", c.get("case_id") or ""),
+            reverse=True
+        )
         return filtered[:limit]
 
     def update_case(self,
@@ -627,9 +650,93 @@ class DatabaseClient:
             print(f"[Database Error] Confirmed outcome {transaction_id} database write failed: {e}. Preserved in ephemeral memory.")
             return True
 
+    def authorize_transaction(self, transaction_id: str, authorized_by: str) -> Optional[Dict[str, Any]]:
+        """
+        Transitions a transaction from 'PENDING' to 'AUTHORIZED'.
+        Only updates authorization status and audit attributes; preserves all other transaction details.
+        Records an immutable audit event in investigation_audit_logs.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        current_status = None
+        target_txn = None
+
+        with DatabaseClient._buffer_lock:
+            for t in self._memory_transactions:
+                if t.get("transaction_id") == transaction_id:
+                    current_status = (t.get("authorization_status") or "").upper()
+                    target_txn = t
+                    break
+
+        if not target_txn:
+            target_txn = self.get_transaction(transaction_id)
+            if target_txn:
+                current_status = (target_txn.get("authorization_status") or "").upper()
+
+        if not target_txn:
+            return None
+
+        # Enforce valid transition: only PENDING -> AUTHORIZED
+        if current_status != "PENDING":
+            raise ValueError(
+                f"Cannot authorize transaction with status '{current_status}'. Only 'PENDING' transactions can be authorized."
+            )
+
+        # Update in-memory
+        with DatabaseClient._buffer_lock:
+            if target_txn in self._memory_transactions:
+                target_txn["authorization_status"] = "AUTHORIZED"
+                target_txn["authorized_by"] = authorized_by
+                target_txn["authorized_at"] = now_iso
+            else:
+                target_copy = dict(target_txn)
+                target_copy["authorization_status"] = "AUTHORIZED"
+                target_copy["authorized_by"] = authorized_by
+                target_copy["authorized_at"] = now_iso
+                self._memory_transactions.insert(0, target_copy)
+
+        # Update database
+        if self.test_connection():
+            try:
+                with self.get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            UPDATE transactions
+                            SET authorization_status = 'AUTHORIZED',
+                                authorized_by = %s,
+                                authorized_at = CURRENT_TIMESTAMP
+                            WHERE transaction_id = %s;
+                        """, (authorized_by, transaction_id))
+
+                        cur.execute("SELECT case_id FROM fraud_investigations WHERE transaction_id = %s LIMIT 1;", (transaction_id,))
+                        case_row = cur.fetchone()
+                        active_case_id = case_row[0] if case_row else None
+
+                        log_id = f"LOG_{uuid.uuid4().hex[:12]}"
+                        cur.execute("""
+                            INSERT INTO investigation_audit_logs (
+                                log_id, case_id, user_id, action, previous_state, new_state
+                            ) VALUES (%s, %s, %s, %s, %s, %s);
+                        """, (
+                            log_id,
+                            active_case_id,
+                            authorized_by,
+                            "TRANSACTION_AUTHORIZED",
+                            Json({"authorization_status": current_status or "PENDING"}),
+                            Json({
+                                "authorization_status": "AUTHORIZED",
+                                "authorized_by": authorized_by,
+                                "authorized_at": now_iso
+                            })
+                        ))
+                    conn.commit()
+            except Exception as e:
+                print(f"[Database Error] Transaction authorization failed: {e}. Preserved in ephemeral memory.")
+
+        return self.get_transaction(transaction_id) or target_txn
+
     def get_customer_transactions(self, card_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         """
-        Retrieves transactions strictly for a specific customer/cardholder.
+        Retrieves transactions strictly for a specific customer/cardholder, sorted newest-first deterministically.
         Omits sensitive model internals (weights/rules) to protect algorithm confidentiality.
         """
         try:
@@ -647,11 +754,14 @@ class DatabaseClient:
                 t.city,
                 t.timestamp,
                 t.authorization_status,
+                t.authorized_by,
+                t.authorized_at,
+                t.ingested_at,
                 COALESCE(p.fraud_decision, 'LEGITIMATE') AS fraud_decision
             FROM transactions t
             LEFT JOIN fraud_predictions p ON t.transaction_id = p.transaction_id
             WHERE t.card_id = %s OR t.user_id = %s OR t.user_id = %s
-            ORDER BY t.timestamp DESC
+            ORDER BY COALESCE(t.ingested_at, t.timestamp) DESC, t.transaction_id DESC
             LIMIT %s;
             """
             with self.get_connection() as conn:
@@ -662,10 +772,15 @@ class DatabaseClient:
         except Exception:
             self.is_connected = False
 
-        return [
+        filtered = [
             t for t in self._memory_transactions
             if t.get("card_id") == card_id or t.get("user_id") == card_id
-        ][:limit]
+        ]
+        filtered.sort(
+            key=lambda t: (t.get("ingested_at") or t.get("timestamp") or "", t.get("transaction_id") or ""),
+            reverse=True
+        )
+        return filtered[:limit]
 
     def get_audit_logs(self, limit: int = 100) -> List[Dict[str, Any]]:
         """
@@ -708,7 +823,8 @@ class DatabaseClient:
         try:
             sql = """
             SELECT t.transaction_id, t.card_id, t.user_id, t.amount, t.currency, t.channel,
-                   t.merchant_name, t.city, t.authorization_status, t.timestamp,
+                   t.merchant_name, t.merchant_name AS merchant, t.city, t.city AS location,
+                   t.authorization_status, t.authorized_by, t.authorized_at, t.ingested_at, t.timestamp,
                    p.ml_score, p.behavior_score, p.rule_score, p.final_fraud_score,
                    p.fraud_decision, p.explanation, p.processing_latency_ms
             FROM transactions t
@@ -785,38 +901,43 @@ class DatabaseClient:
         Records a customer dispute for an existing transaction.
         Creates/updates an investigation case in 'OPEN' status with 'PENDING' outcome (distinct from confirmed fraud).
         Logs an immutable audit event in investigation_audit_logs.
+        Ensures the created or updated case immediately surfaces at the top of the investigation queue.
         """
         case_id = f"CASE_{transaction_id}"
         now_iso = datetime.now(timezone.utc).isoformat()
         dispute_note = f"Customer Dispute [{reason}]: {notes or 'No additional notes provided'}"
 
         # Update or add in-memory case
-        found_case = False
-        for c in self._memory_cases:
-            if c.get("case_id") == case_id or c.get("transaction_id") == transaction_id:
-                c["status"] = "OPEN"
-                c["priority"] = "HIGH"
-                c["analyst_decision"] = "PENDING"
-                prev_note = c.get("analyst_notes") or ""
-                c["analyst_notes"] = f"{prev_note}\n{dispute_note}" if prev_note else dispute_note
-                found_case = True
-                break
-        if not found_case:
-            txn = self.get_transaction(transaction_id) or {}
-            self._memory_cases.insert(0, {
-                "case_id": case_id,
-                "transaction_id": transaction_id,
-                "card_id": txn.get("card_id", "CARD_UNKNOWN"),
-                "amount": txn.get("amount", 0.0),
-                "merchant": txn.get("merchant_name") or txn.get("merchant", "Unknown Merchant"),
-                "location": txn.get("city") or txn.get("location", "Unknown Location"),
-                "status": "OPEN",
-                "priority": "HIGH",
-                "assigned_analyst_id": None,
-                "analyst_decision": "PENDING",
-                "analyst_notes": dispute_note,
-                "opened_at": now_iso
-            })
+        with DatabaseClient._buffer_lock:
+            found_case = False
+            for c in self._memory_cases:
+                if c.get("case_id") == case_id or c.get("transaction_id") == transaction_id:
+                    c["status"] = "OPEN"
+                    c["priority"] = "HIGH"
+                    c["analyst_decision"] = "PENDING"
+                    c["opened_at"] = now_iso
+                    prev_note = c.get("analyst_notes") or ""
+                    c["analyst_notes"] = f"{prev_note}\n{dispute_note}" if prev_note else dispute_note
+                    found_case = True
+                    self._memory_cases.remove(c)
+                    self._memory_cases.insert(0, c)
+                    break
+            if not found_case:
+                txn = self.get_transaction(transaction_id) or {}
+                self._memory_cases.insert(0, {
+                    "case_id": case_id,
+                    "transaction_id": transaction_id,
+                    "card_id": txn.get("card_id", "CARD_UNKNOWN"),
+                    "amount": txn.get("amount", 0.0),
+                    "merchant": txn.get("merchant_name") or txn.get("merchant", "Unknown Merchant"),
+                    "location": txn.get("city") or txn.get("location", "Unknown Location"),
+                    "status": "OPEN",
+                    "priority": "HIGH",
+                    "assigned_analyst_id": None,
+                    "analyst_decision": "PENDING",
+                    "analyst_notes": dispute_note,
+                    "opened_at": now_iso
+                })
 
         log_id = f"LOG_{uuid.uuid4().hex[:12]}"
         audit_state = {
@@ -837,6 +958,7 @@ class DatabaseClient:
                         ON CONFLICT (case_id) DO UPDATE SET
                             status = 'OPEN',
                             priority = 'HIGH',
+                            opened_at = CURRENT_TIMESTAMP,
                             analyst_notes = COALESCE(fraud_investigations.analyst_notes || E'\n---\n', '') || EXCLUDED.analyst_notes;
                         """
                         cur.execute(case_sql, (case_id, transaction_id, dispute_note))
@@ -865,7 +987,7 @@ class DatabaseClient:
 
     def get_customer_disputes(self, card_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
         """
-        Retrieves disputes and investigation cases for a specific customer's card.
+        Retrieves disputes and investigation cases for a specific customer's card, sorted newest-first deterministically.
         """
         try:
             sql = """
@@ -885,7 +1007,7 @@ class DatabaseClient:
             FROM fraud_investigations i
             JOIN transactions t ON i.transaction_id = t.transaction_id
             WHERE t.card_id = %s OR t.user_id = %s OR t.user_id = %s
-            ORDER BY i.opened_at DESC
+            ORDER BY i.opened_at DESC, i.case_id DESC
             LIMIT %s;
             """
             with self.get_connection() as conn:
@@ -907,6 +1029,10 @@ class DatabaseClient:
             c for c in self._memory_cases
             if not card_id or c.get("card_id") == card_id or c.get("user_id") == card_id
         ]
+        mem_filtered.sort(
+            key=lambda c: (c.get("opened_at") or "", c.get("case_id") or ""),
+            reverse=True
+        )
         results = []
         for c in mem_filtered[:limit]:
             item = dict(c)

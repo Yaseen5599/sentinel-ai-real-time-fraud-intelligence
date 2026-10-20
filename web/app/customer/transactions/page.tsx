@@ -52,7 +52,7 @@ export default function CustomerTransactionsPage() {
 
   return (
     <AppShell
-      title="Authorized Transaction History"
+      title="Transaction Explorer"
       subtitle="Personal Cardholder Statement & Detailed Receipt Breakdown"
     >
       {/* Search and Metadata Bar */}
@@ -110,9 +110,19 @@ export default function CustomerTransactionsPage() {
                     ${(t.amount || 0).toFixed(2)}
                   </td>
                   <td className="py-3 px-4 text-center">
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                      SETTLED
-                    </span>
+                    {t.authorization_status === 'AUTHORIZED' ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        Authorised
+                      </span>
+                    ) : t.authorization_status === 'DECLINED' ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-50 text-red-700 border border-red-200">
+                        Declined
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                        Pending
+                      </span>
+                    )}
                   </td>
                   <td className="py-3 px-4 text-right">
                     <span className="text-brand-600 font-semibold text-xs flex items-center justify-end gap-1">
@@ -158,9 +168,19 @@ export default function CustomerTransactionsPage() {
                 <p className="text-3xl font-black font-mono text-ink mt-1 tabular-nums">
                   ${(selectedTx.amount || 0).toFixed(2)}
                 </p>
-                <span className="inline-block mt-2 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  Authorized & Verified
-                </span>
+                {selectedTx.authorization_status === 'AUTHORIZED' ? (
+                  <span className="inline-block mt-2 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    Authorised & Verified
+                  </span>
+                ) : selectedTx.authorization_status === 'DECLINED' ? (
+                  <span className="inline-block mt-2 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-red-50 text-red-700 border border-red-200">
+                    Declined
+                  </span>
+                ) : (
+                  <span className="inline-block mt-2 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                    Pending
+                  </span>
+                )}
               </div>
 
               <div className="space-y-3 text-xs">

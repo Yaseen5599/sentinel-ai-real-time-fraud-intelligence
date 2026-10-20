@@ -247,7 +247,7 @@ class TransactionIngestRequest(BaseModel):
     country: str = Field(default="US")
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    authorization_status: str = Field(default="AUTHORIZED")
+    authorization_status: str = Field(default="PENDING")
     timestamp: Optional[str] = None
     scenario: Optional[str] = Field(default="NORMAL_SPEND")
 
@@ -380,6 +380,7 @@ def ingest_transaction(
         "triggered_rules": result["triggered_rules"],
         "processing_latency_ms": result["processing_latency_ms"],
         "case_opened": result["fraud_decision"] in ["SUSPICIOUS", "FRAUD"],
+        "authorization_status": result.get("authorization_status", "PENDING"),
         "storage_mode": result.get("storage_mode", "in_memory_buffer"),
         "persisted_to_db": result.get("persisted_to_db", False)
     }
@@ -430,6 +431,66 @@ def get_transaction_detail(
     if "card_id" in txn_copy and "masked_card_id" not in txn_copy:
         txn_copy["masked_card_id"] = mask_card_id(txn_copy["card_id"])
     return txn_copy
+
+@app.post("/api/v1/transactions/{transaction_id}/authorize", tags=["Transactions"])
+@app.patch("/api/v1/transactions/{transaction_id}/authorize", tags=["Transactions"])
+def authorize_transaction(
+    transaction_id: str,
+    auth_ctx: Dict[str, Any] = Depends(require_roles(["admin", "fraud_investigator"]))
+):
+    """
+    Transitions a transaction from 'PENDING' to 'AUTHORIZED'.
+    Strictly restricted to authorized administrators and fraud investigators.
+    Rejects customer authorization attempts with 403 Forbidden.
+    Enforces allowed status transitions (only PENDING -> AUTHORIZED).
+    Records approver identity and timestamp, writes immutable audit log, and persists change.
+    """
+    approver = auth_ctx.get("email") or auth_ctx.get("user_id") or "admin"
+    txn = db_client.get_transaction(transaction_id)
+    if not txn:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Transaction '{transaction_id}' not found."
+        )
+
+    current_status = (txn.get("authorization_status") or "").upper()
+    if current_status == "AUTHORIZED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Transaction '{transaction_id}' has already been AUTHORIZED."
+        )
+    if current_status != "PENDING":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot authorize transaction with status '{current_status}'. Only 'PENDING' transactions can be authorized."
+        )
+
+    try:
+        updated_txn = db_client.authorize_transaction(transaction_id, authorized_by=approver)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    if not updated_txn:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update transaction authorization status."
+        )
+
+    updated_copy = dict(updated_txn)
+    if "card_id" in updated_copy and "masked_card_id" not in updated_copy:
+        updated_copy["masked_card_id"] = mask_card_id(updated_copy["card_id"])
+
+    return {
+        "status": "authorized",
+        "transaction_id": transaction_id,
+        "authorization_status": updated_copy.get("authorization_status", "AUTHORIZED"),
+        "authorized_by": approver,
+        "authorized_at": updated_copy.get("authorized_at") or datetime.now(timezone.utc).isoformat(),
+        "transaction": updated_copy
+    }
 
 @app.get("/api/v1/analytics/kpis")
 def get_kpis(
@@ -1074,22 +1135,31 @@ def simulate_traffic(
     cid = payload.card_id or "CARD_007"
     raw_txns = []
 
-    if scenario == "RAPID_BURST" or scenario == "RAPID_TRANSACTION_BURST":
+    if scenario in ("RAPID_BURST", "RAPID_TRANSACTION_BURST"):
         raw_txns = generator.generate_scenario_rapid_burst(card_id=cid, count=payload.count or 6)
-    elif scenario == "IMPOSSIBLE_TRAVEL":
-        raw_txns = generator.generate_scenario_impossible_travel(card_id=cid)
-    elif scenario == "HIGH_VALUE_SPIKE":
-        raw_txns = [generator.generate_scenario_high_value_spike(card_id=cid)]
-    elif scenario == "ACCOUNT_TAKEOVER":
-        raw_txns = [generator.generate_scenario_account_takeover(card_id=cid)]
-    elif scenario == "CARD_TESTING":
-        raw_txns = generator.generate_scenario_declined_card_testing(card_id=cid)
+    elif scenario in ("IMPOSSIBLE_TRAVEL", "TRAVEL_ANOMALY"):
+        raw_txns = generator.generate_scenario_impossible_travel(card_id=cid or "CARD_012")
+    elif scenario in ("HIGH_VALUE_SPIKE", "HIGH_AMOUNT"):
+        raw_txns = [generator.generate_scenario_high_value_spike(card_id=cid or "CARD_005")]
+    elif scenario in ("ACCOUNT_TAKEOVER", "NIGHT_ANOMALY", "NIGHT_SPEND"):
+        raw_txns = [generator.generate_scenario_account_takeover(card_id=cid or "CARD_018")]
+    elif scenario in ("MERCHANT_SWARM", "CARD_SWARM"):
+        raw_txns = generator.generate_scenario_card_swarm(merchant_name="LuxuryJewelry", count=payload.count or 4)
+    elif scenario in ("CARD_TESTING", "DECLINED_CARD_TESTING"):
+        raw_txns = generator.generate_scenario_declined_card_testing(card_id=cid or "CARD_022")
+    elif scenario in ("NORMAL", "NORMAL_SPEND"):
+        raw_txns = [generator.generate_normal_transaction(card_id=payload.card_id) for _ in range(payload.count or 5)]
     else:
         raw_txns = [generator.generate_normal_transaction(card_id=payload.card_id) for _ in range(payload.count or 5)]
 
     # If publish_to_kafka is requested
     if payload.publish_to_kafka:
         producer = TransactionKafkaProducer()
+        if not producer.is_connected:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Kafka broker is unreachable at {producer.bootstrap_servers}. Cannot route scenario via Kafka canonical topic."
+            )
         published_count = 0
         failed_count = 0
         published_txns = []
@@ -1100,41 +1170,62 @@ def simulate_traffic(
                 t["idempotency_key"] = f"IDEMP_SIM_{uuid.uuid4().hex[:10]}"
             if not t.get("timestamp"):
                 t["timestamp"] = datetime.now(timezone.utc).isoformat()
+            if not t.get("authorization_status"):
+                t["authorization_status"] = "PENDING"
 
             ok = producer.send_transaction(t)
             if ok:
                 published_count += 1
                 t_masked = dict(t)
                 t_masked["masked_card_id"] = mask_card_id(t_masked.get("card_id", ""))
+                t_masked["delivery_status"] = "published"
+                t_masked["persisted_to_db"] = False
                 published_txns.append(t_masked)
             else:
                 failed_count += 1
 
         producer.flush()
         return {
+            "status": "success",
             "scenario": scenario,
+            "route": "kafka",
             "delivery_mode": "kafka",
             "topic": KAFKA_CANONICAL_TOPIC,
+            "transactions_published": published_count,
             "published_count": published_count,
             "failed_count": failed_count,
+            "persisted_count": 0,
             "kafka_connected": producer.is_connected,
-            "note": "Events published to Kafka canonical topic. Downstream ingestion and persistence will be executed asynchronously by the streaming processor.",
+            "message": f"Successfully published {published_count} transactions to Kafka topic '{KAFKA_CANONICAL_TOPIC}'.",
+            "note": "Events published to Kafka canonical topic. Genuine Spark Structured Streaming pipeline processes and persists events asynchronously.",
             "transactions": published_txns
         }
 
     # Default in-process processing
     results = []
+    persisted_count = 0
     for t in raw_txns:
-        results.append(processor.process_transaction(t))
+        if not t.get("authorization_status"):
+            t["authorization_status"] = "PENDING"
+        res = processor.process_transaction(t)
+        if res.get("persisted_to_db"):
+            persisted_count += 1
+        results.append(res)
 
     for r in results:
         if "card_id" in r and "masked_card_id" not in r:
             r["masked_card_id"] = mask_card_id(r["card_id"])
 
     return {
+        "status": "success",
         "scenario": scenario,
+        "route": "in-process",
         "delivery_mode": "in_process",
         "processed_count": len(results),
+        "transactions_published": len(results),
+        "persisted_count": persisted_count,
+        "scores": results,
+        "message": f"Injected and scored {len(results)} transactions (persisted: {persisted_count}).",
         "transactions": results
     }
 

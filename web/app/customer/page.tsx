@@ -142,14 +142,14 @@ export default function CustomerDashboardPage() {
               ${totalSpent.toFixed(2)}
             </h3>
             <p className="text-xs text-ink-secondary mt-1">
-              Total volume across {customerTxns.length} authorized recent transactions.
+              Total volume across {customerTxns.length} recent transactions.
             </p>
           </div>
           <Link
             href="/customer/transactions"
             className="mt-3 py-2 px-3 rounded-lg bg-surface-subtle hover:bg-surface-border text-xs font-semibold text-brand-600 flex items-center justify-between transition-colors border border-surface-border"
           >
-            <span>Inspect Full History</span>
+            <span>Inspect Transaction Explorer</span>
             <ArrowRight className="h-3.5 w-3.5" />
           </Link>
         </div>
@@ -231,8 +231,14 @@ export default function CustomerDashboardPage() {
                     ${(t.amount || 0).toFixed(2)}
                   </td>
                   <td className="py-3 px-4 text-center">
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                      AUTHORIZED
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                      (t.authorization_status || 'PENDING') === 'AUTHORIZED'
+                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                        : (t.authorization_status || 'PENDING') === 'DECLINED'
+                        ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                        : 'bg-amber-50 text-amber-700 border border-amber-200'
+                    }`}>
+                      {t.authorization_status || 'PENDING'}
                     </span>
                   </td>
                   <td className="py-3 px-4 text-right">

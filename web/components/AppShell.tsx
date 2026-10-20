@@ -109,7 +109,7 @@ export const AppShell: React.FC<AppShellProps> = ({
 
   const customerNav = [
     { label: 'Customer Dashboard', href: '/customer', icon: LayoutDashboard },
-    { label: 'Authorized Transactions', href: '/customer/transactions', icon: History },
+    { label: 'Transaction Explorer', href: '/customer/transactions', icon: History },
     { label: 'Report Suspicious Activity', href: '/customer/report', icon: FileWarning },
   ]
 

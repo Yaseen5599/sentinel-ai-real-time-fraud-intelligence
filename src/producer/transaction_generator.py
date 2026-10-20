@@ -104,10 +104,12 @@ class TransactionGenerator:
             "location": city,  # Legacy field compatibility
             "merchant": merchant_name,  # Legacy field compatibility
             "device_fingerprint": f"DEV_{hash((card_id, city)) & 0xFFFFFF:06x}",
-            "authorization_status": "AUTHORIZED" if status == "SUCCESS" else "DECLINED",
+            "authorization_status": "DECLINED" if status == "DECLINED" else "PENDING",
             "status": status,
             "timestamp": iso_ts,
-            "scenario": scenario
+            "scenario": scenario,
+            "is_synthetic": True,
+            "is_demo": True
         }
 
     def generate_normal_transaction(self, card_id: Optional[str] = None, timestamp: Optional[datetime] = None) -> Dict[str, Any]:
@@ -118,9 +120,7 @@ class TransactionGenerator:
 
         profile = self.profiles[card_id]
         if timestamp is None:
-            now = datetime.now(timezone.utc)
-            hour = random.choice(profile["active_hours"])
-            timestamp = now.replace(hour=hour, minute=random.randint(0, 59), second=random.randint(0, 59), microsecond=0)
+            timestamp = datetime.now(timezone.utc)
 
         amount = round(max(3.50, random.gauss(profile["base_amount"], profile["base_amount"] * 0.3)), 2)
         merchant = random.choice(profile["frequent_merchants"])
@@ -140,7 +140,8 @@ class TransactionGenerator:
     def generate_scenario_rapid_burst(self, card_id: str = "CARD_007", count: int = 7) -> List[Dict[str, Any]]:
         """Scenario: Rapid transactions (>5 txns within 2 minutes)."""
         txns = []
-        base_time = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        base_time = now - timedelta(seconds=max(0, (count - 1) * 12))
         city = self.profiles.get(card_id, {}).get("home_location", "Chicago")
         for i in range(count):
             self.tx_counter += 1
@@ -251,3 +252,31 @@ class TransactionGenerator:
             scenario="DECLINED_FOLLOWED_BY_SUCCESS"
         ))
         return txns
+
+    def generate_scenario_card_swarm(self, merchant_name: str = "OnlineStore", count: int = 4) -> List[Dict[str, Any]]:
+        """Scenario: Multiple distinct cards used at the same merchant within 5 minutes (RULE_6_MERCHANT_CARD_SWARM)."""
+        txns = []
+        now = datetime.now(timezone.utc)
+        base_time = now - timedelta(seconds=max(0, (count - 1) * 15))
+        card_pool = [f"CARD_{i:03d}" for i in range(1, 30)]
+        swarm_cards = random.sample(card_pool, max(4, min(count, len(card_pool))))
+        for i, cid in enumerate(swarm_cards):
+            self.tx_counter += 1
+            t_time = base_time + timedelta(seconds=i * 15)
+            txns.append(self._build_canonical_payload(
+                txn_id=f"TX{self.tx_counter}",
+                card_id=cid,
+                amount=round(random.uniform(65.0, 180.0), 2),
+                merchant_name=merchant_name,
+                city="Chicago",
+                timestamp=t_time,
+                status="SUCCESS",
+                scenario="MERCHANT_CARD_SWARM"
+            ))
+        return txns
+
+    # Backward-compatible and canonical aliases
+    generate_scenario_high_amount = generate_scenario_high_value_spike
+    generate_scenario_night_spend = generate_scenario_account_takeover
+    generate_scenario_travel_anomaly = generate_scenario_impossible_travel
+

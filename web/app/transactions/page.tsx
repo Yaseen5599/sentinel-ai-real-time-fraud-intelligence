@@ -17,7 +17,8 @@ import {
   Building,
   Activity,
   Layers,
-  ChevronRight
+  ChevronRight,
+  CheckCircle2
 } from 'lucide-react'
 import { AppShell } from '../../components/AppShell'
 import { TransactionRecord } from '../../components/TransactionStream'
@@ -35,6 +36,9 @@ function TransactionExplorerContent() {
   const [minAmount, setMinAmount] = useState<number>(0)
   const [selectedTx, setSelectedTx] = useState<TransactionRecord | null>(null)
   const [isLoadingDetail, setIsLoadingDetail] = useState(false)
+  const [isAuthorizing, setIsAuthorizing] = useState(false)
+  const [authError, setAuthError] = useState<string | null>(null)
+  const [authSuccess, setAuthSuccess] = useState<string | null>(null)
 
   const fetchTransactions = useCallback(async () => {
     try {
@@ -88,12 +92,43 @@ function TransactionExplorerContent() {
 
   const handleInspect = (tx: TransactionRecord) => {
     setSelectedTx(tx)
+    setAuthError(null)
+    setAuthSuccess(null)
     router.replace(`/transactions?inspect=${encodeURIComponent(tx.transaction_id)}`, { scroll: false })
   }
 
   const handleCloseInspect = () => {
     setSelectedTx(null)
+    setAuthError(null)
+    setAuthSuccess(null)
     router.replace('/transactions', { scroll: false })
+  }
+
+  const handleAuthorize = async (txId: string) => {
+    setIsAuthorizing(true)
+    setAuthError(null)
+    setAuthSuccess(null)
+    try {
+      const res: any = await api.post(`/api/v1/transactions/${txId}/authorize`, {})
+      setAuthSuccess(`Transaction ${txId} successfully authorized by ${res.authorized_by || 'authorized user'}.`)
+      setSelectedTx(prev => prev ? {
+        ...prev,
+        authorization_status: 'AUTHORIZED',
+        authorized_by: res.authorized_by,
+        authorized_at: res.authorized_at
+      } : null)
+      setTransactions(prev => prev.map(t => t.transaction_id === txId ? {
+        ...t,
+        authorization_status: 'AUTHORIZED',
+        authorized_by: res.authorized_by,
+        authorized_at: res.authorized_at
+      } : t))
+      await fetchTransactions()
+    } catch (err: any) {
+      setAuthError(err.detail || err.message || 'Authorization failed. Admin or Fraud Investigator privilege is required.')
+    } finally {
+      setIsAuthorizing(false)
+    }
   }
 
   const filteredTransactions = useMemo(() => {
@@ -128,6 +163,18 @@ function TransactionExplorerContent() {
       case 'LEGITIMATE':
       default:
         return 'bg-emerald-50 text-emerald-700 border-emerald-200'
+    }
+  }
+
+  const getAuthBadge = (status?: string) => {
+    switch (status) {
+      case 'AUTHORIZED':
+        return 'bg-emerald-50 text-emerald-700 border-emerald-200'
+      case 'DECLINED':
+        return 'bg-rose-50 text-rose-700 border-rose-200'
+      case 'PENDING':
+      default:
+        return 'bg-amber-50 text-amber-700 border-amber-200'
     }
   }
 
@@ -234,6 +281,7 @@ function TransactionExplorerContent() {
                 <th className="py-3 px-4 text-right">Amount</th>
                 <th className="py-3 px-4 text-center">Composite Score</th>
                 <th className="py-3 px-4 text-center">Decision</th>
+                <th className="py-3 px-4 text-center">Auth Status</th>
                 <th className="py-3 px-4 text-center">Latency</th>
                 <th className="py-3 px-4 text-right">Action</th>
               </tr>
@@ -290,6 +338,15 @@ function TransactionExplorerContent() {
                       {tx.fraud_decision || 'LEGITIMATE'}
                     </span>
                   </td>
+                  <td className="py-3 px-4 text-center">
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border ${getAuthBadge(
+                        tx.authorization_status
+                      )}`}
+                    >
+                      {tx.authorization_status || 'PENDING'}
+                    </span>
+                  </td>
                   <td className="py-3 px-4 text-center font-mono text-[11px] text-ink-muted">
                     {typeof tx.processing_latency_ms === 'number' ? `${tx.processing_latency_ms.toFixed(1)} ms` : '—'}
                   </td>
@@ -310,7 +367,7 @@ function TransactionExplorerContent() {
 
               {filteredTransactions.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-ink-muted">
+                  <td colSpan={9} className="text-center py-12 text-ink-muted">
                     {isLoading
                       ? 'Loading live transactions from API...'
                       : 'No transactions match the selected filters.'}
@@ -348,15 +405,24 @@ function TransactionExplorerContent() {
                     ${typeof selectedTx.amount === 'number' ? selectedTx.amount.toFixed(2) : '0.00'}
                   </span>
                 </div>
-                <div className="text-right">
-                  <span
-                    className={`inline-block px-3 py-1 rounded-full text-xs font-bold uppercase border ${getStatusBadge(
-                      selectedTx.fraud_decision
-                    )}`}
-                  >
-                    {selectedTx.fraud_decision || 'LEGITIMATE'}
-                  </span>
-                  <span className="text-xs text-ink-muted block mt-1 font-mono">
+                <div className="text-right space-y-1.5">
+                  <div className="flex items-center justify-end gap-1.5">
+                    <span
+                      className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase border ${getStatusBadge(
+                        selectedTx.fraud_decision
+                      )}`}
+                    >
+                      {selectedTx.fraud_decision || 'LEGITIMATE'}
+                    </span>
+                    <span
+                      className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase border ${getAuthBadge(
+                        selectedTx.authorization_status
+                      )}`}
+                    >
+                      {selectedTx.authorization_status || 'PENDING'}
+                    </span>
+                  </div>
+                  <span className="text-xs text-ink-muted block font-mono">
                     Score:{' '}
                     {typeof selectedTx.final_fraud_score === 'number'
                       ? `${(selectedTx.final_fraud_score * 100).toFixed(1)}%`
@@ -428,6 +494,22 @@ function TransactionExplorerContent() {
                     <span className="font-mono text-ink">{selectedTx.timestamp || 'Unavailable'}</span>
                   </div>
                   <div className="flex justify-between py-1.5 border-b border-surface-border">
+                    <span className="text-ink-muted">Authorization Status:</span>
+                    <span className="font-semibold text-ink">{selectedTx.authorization_status || 'PENDING'}</span>
+                  </div>
+                  {selectedTx.authorized_by && (
+                    <div className="flex justify-between py-1.5 border-b border-surface-border">
+                      <span className="text-ink-muted">Authorized By:</span>
+                      <span className="font-mono text-ink">{selectedTx.authorized_by}</span>
+                    </div>
+                  )}
+                  {selectedTx.authorized_at && (
+                    <div className="flex justify-between py-1.5 border-b border-surface-border">
+                      <span className="text-ink-muted">Authorized At:</span>
+                      <span className="font-mono text-ink">{selectedTx.authorized_at}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between py-1.5 border-b border-surface-border">
                     <span className="text-ink-muted">Inference Latency:</span>
                     <span className="font-mono text-ink">
                       {typeof selectedTx.processing_latency_ms === 'number' ? `${selectedTx.processing_latency_ms.toFixed(1)} ms` : 'Unavailable'}
@@ -452,7 +534,29 @@ function TransactionExplorerContent() {
               )}
             </div>
 
-            <div className="pt-4 border-t border-surface-border mt-4">
+            <div className="pt-4 border-t border-surface-border mt-4 space-y-2">
+              {authSuccess && (
+                <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                  <span>{authSuccess}</span>
+                </div>
+              )}
+              {authError && (
+                <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600" />
+                  <span>{authError}</span>
+                </div>
+              )}
+              {(selectedTx.authorization_status || 'PENDING') === 'PENDING' && (
+                <button
+                  onClick={() => handleAuthorize(selectedTx.transaction_id)}
+                  disabled={isAuthorizing}
+                  className="w-full py-2.5 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold shadow-sm transition-all flex items-center justify-center gap-2"
+                >
+                  <ShieldCheck className="h-4 w-4" />
+                  <span>{isAuthorizing ? 'Authorising...' : 'Approve & Authorise Transaction'}</span>
+                </button>
+              )}
               <button
                 onClick={handleCloseInspect}
                 className="w-full py-2.5 px-4 rounded-lg bg-surface-subtle hover:bg-surface-border text-ink-secondary text-xs font-semibold transition-colors border border-surface-border"

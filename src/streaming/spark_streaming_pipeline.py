@@ -373,7 +373,7 @@ class RealTimeStreamProcessor:
             "latitude": txn.get("latitude"),
             "longitude": txn.get("longitude"),
             "timestamp": ts.isoformat(),
-            "authorization_status": txn.get("authorization_status", "AUTHORIZED"),
+            "authorization_status": txn.get("authorization_status") or "PENDING",
             "ml_score": result["ml_score"],
             "behavior_score": result["behavior_score"],
             "rule_score": result["rule_score"],
