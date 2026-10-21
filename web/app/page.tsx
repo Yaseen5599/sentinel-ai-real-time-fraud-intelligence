@@ -47,7 +47,7 @@ export default function AuthorityConsolePage() {
   const [activeScenario, setActiveScenario] = useState<string | null>(null)
   const [routeViaKafka, setRouteViaKafka] = useState(false)
   const [simulationFeedback, setSimulationFeedback] = useState<{
-    type: 'success' | 'error'
+    type: 'success' | 'error' | 'warning' | 'info'
     message: string
     details?: string
   } | null>(null)
@@ -113,13 +113,99 @@ export default function AuthorityConsolePage() {
     setSimulationFeedback(null)
     try {
       const res: any = await api.post('/api/v1/simulate', { scenario, count, publish_to_kafka: routeViaKafka })
-      setSimulationFeedback({
-        type: 'success',
-        message: res.message || `Scenario ${scenario} executed successfully.`,
-        details: res.route === 'kafka'
-          ? `Published ${res.transactions_published} transaction(s) to Kafka topic for Spark Structured Streaming.`
-          : `Processed & persisted ${res.persisted_count ?? res.transactions_published ?? 0} transaction(s) through canonical ML & rule pipeline.`
-      })
+      
+      if (res.route === 'kafka' || res.delivery_mode === 'kafka') {
+        const publishedCount = res.published_count ?? res.transactions_published ?? 0
+        const txIds: string[] = res.transaction_ids || (res.transactions ? res.transactions.map((t: any) => t.transaction_id) : [])
+
+        if (txIds.length === 0 || publishedCount === 0) {
+          setSimulationFeedback({
+            type: 'error',
+            message: `Publish failed for scenario ${scenario}.`,
+            details: 'No transactions were accepted by Kafka broker.'
+          })
+          setIsSimulating(false)
+          setActiveScenario(null)
+          return
+        }
+
+        setSimulationFeedback({
+          type: 'info',
+          message: `Published ${publishedCount} event(s) to Kafka canonical topic.`,
+          details: 'Awaiting asynchronous Spark Structured Streaming micro-batch processing & persistence...'
+        })
+
+        // Poll /api/v1/simulate/status for async persistence verification
+        let attempts = 0
+        const maxAttempts = 8
+        const pollInterval = setInterval(async () => {
+          attempts += 1
+          try {
+            const statusRes: any = await api.get(`/api/v1/simulate/status?ids=${encodeURIComponent(txIds.join(','))}`)
+            const persisted = statusRes.persisted_count || 0
+            if (persisted === txIds.length && txIds.length > 0) {
+              clearInterval(pollInterval)
+              setSimulationFeedback({
+                type: 'success',
+                message: `Scenario ${scenario} processed & persisted!`,
+                details: `Spark Structured Streaming processed and persisted ${persisted} transaction(s) to database.`
+              })
+              setIsSimulating(false)
+              setActiveScenario(null)
+              await fetchTelemetry()
+            } else if (attempts >= maxAttempts) {
+              clearInterval(pollInterval)
+              setIsSimulating(false)
+              setActiveScenario(null)
+              if (persisted > 0) {
+                setSimulationFeedback({
+                  type: 'warning',
+                  message: `Partially completed: ${persisted}/${txIds.length} persisted.`,
+                  details: 'Some events persisted; remaining events may still be in stream buffer.'
+                })
+              } else {
+                setSimulationFeedback({
+                  type: 'warning',
+                  message: 'Asynchronous streaming persistence pending.',
+                  details: `Published ${publishedCount} event(s) to Kafka. Spark stream is processing asynchronously.`
+                })
+              }
+              await fetchTelemetry()
+            }
+          } catch {
+            if (attempts >= maxAttempts) {
+              clearInterval(pollInterval)
+              setIsSimulating(false)
+              setActiveScenario(null)
+            }
+          }
+        }, 1500)
+        return
+      }
+
+      // In-process synchronous execution
+      const persisted = res.persisted_count ?? 0
+      const processed = res.processed_count ?? res.transactions_published ?? 0
+
+      if (persisted > 0 && persisted === processed) {
+        setSimulationFeedback({
+          type: 'success',
+          message: res.message || `Scenario ${scenario} executed successfully.`,
+          details: `Processed & persisted ${persisted} transaction(s) through canonical ML & rule pipeline.`
+        })
+      } else if (persisted > 0) {
+        setSimulationFeedback({
+          type: 'warning',
+          message: `Partially completed: ${persisted} of ${processed} transaction(s) persisted.`,
+          details: res.message
+        })
+      } else {
+        setSimulationFeedback({
+          type: 'error',
+          message: res.message || `Persistence failed for scenario ${scenario}.`,
+          details: `Processed ${processed} transaction(s), but 0 were persisted to database. Check database connectivity.`
+        })
+      }
       await fetchTelemetry()
     } catch (err: any) {
       console.error('Simulation error:', err)
@@ -131,8 +217,10 @@ export default function AuthorityConsolePage() {
           : undefined
       })
     } finally {
-      setIsSimulating(false)
-      setActiveScenario(null)
+      if (!routeViaKafka) {
+        setIsSimulating(false)
+        setActiveScenario(null)
+      }
     }
   }
 
@@ -327,11 +415,19 @@ export default function AuthorityConsolePage() {
           <div className={`mt-3 p-3 rounded-lg border text-xs flex items-start justify-between gap-2 transition-all ${
             simulationFeedback.type === 'success'
               ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+              : simulationFeedback.type === 'info'
+              ? 'bg-indigo-50 border-indigo-200 text-indigo-900'
+              : simulationFeedback.type === 'warning'
+              ? 'bg-amber-50 border-amber-200 text-amber-900'
               : 'bg-rose-50 border-rose-200 text-rose-900'
           }`}>
             <div className="flex items-start gap-2.5">
               {simulationFeedback.type === 'success' ? (
                 <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+              ) : simulationFeedback.type === 'info' ? (
+                <RefreshCw className="h-4 w-4 text-indigo-600 shrink-0 mt-0.5 animate-spin" />
+              ) : simulationFeedback.type === 'warning' ? (
+                <AlertCircle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
               ) : (
                 <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
               )}

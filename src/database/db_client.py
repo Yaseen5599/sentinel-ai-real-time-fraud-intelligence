@@ -61,6 +61,7 @@ class DatabaseClient:
         }
         self.schema_initialized: bool = DatabaseClient._shared_schema_initialized
         self.schema_error: Optional[str] = None
+        self.is_connected: bool = False
         self._memory_transactions = DatabaseClient._shared_memory_transactions
         self._memory_cases = DatabaseClient._shared_memory_cases
         self._memory_outcomes = DatabaseClient._shared_memory_outcomes
@@ -407,7 +408,7 @@ class DatabaseClient:
                         ) VALUES (%s, %s, 'OPEN', %s, 'PENDING', %s)
                         ON CONFLICT (case_id) DO NOTHING;
                         """
-                        cur.execute(case_sql, (case_id, txn_id, priority, raw_ts))
+                        cur.execute(case_sql, (case_id, txn_id, priority, now_iso))
 
                 conn.commit()
             return True

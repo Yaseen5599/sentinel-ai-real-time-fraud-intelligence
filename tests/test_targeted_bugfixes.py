@@ -275,3 +275,77 @@ def test_customer_report_surfaces_at_top_of_investigation_queue(customer_headers
     assert top_case.get("status") == "OPEN"
     txn = db.get_transaction(my_tx_id)
     assert txn.get("authorization_status") == "PENDING"
+
+
+# ============================================================================
+# 5. ALL 6 SCENARIOS INJECTION & PERSISTENCE VERIFICATION
+# ============================================================================
+
+def test_all_live_scenarios_injection_and_persistence(admin_headers, db):
+    """
+    Triggers all 6 live scenarios individually, verifies canonical scoring execution,
+    persistence in database, stage counts accuracy, simulate/status verification,
+    and newest-first visibility in transaction queries.
+    """
+    scenarios_to_test = [
+        ("NORMAL_SPEND", 5),
+        ("RAPID_BURST", 5),
+        ("TRAVEL_ANOMALY", 2),
+        ("HIGH_AMOUNT", 1),
+        ("NIGHT_SPEND", 1),
+        ("CARD_SWARM", 4),
+    ]
+
+    for scenario_name, expected_count in scenarios_to_test:
+        res = client.post("/api/v1/simulate", json={
+            "scenario": scenario_name,
+            "count": expected_count,
+            "publish_to_kafka": False
+        }, headers=admin_headers)
+
+        assert res.status_code == 200, f"{scenario_name} failed with status {res.status_code}: {res.text}"
+        data = res.json()
+
+        # 1. Status and counts
+        assert data["status"] in ("success", "partial")
+        actual_count = len(data["transactions"])
+        assert actual_count == expected_count, f"{scenario_name} expected {expected_count} txns, got {actual_count}"
+        assert data["persisted_count"] == expected_count, f"{scenario_name} persistence count mismatch"
+        assert data["stages"]["persisted"] == expected_count
+        assert data["stages"]["generated"] == expected_count
+        assert data["stages"]["processed"] == expected_count
+
+        # 2. Verify unique IDs
+        tx_ids = data["transaction_ids"]
+        assert len(tx_ids) == expected_count
+        assert len(set(tx_ids)) == expected_count, f"Duplicate IDs generated in {scenario_name}"
+
+        # 3. Verify simulate status endpoint
+        status_res = client.get(f"/api/v1/simulate/status?ids={','.join(tx_ids)}", headers=admin_headers)
+        assert status_res.status_code == 200
+        status_data = status_res.json()
+        assert status_data["persisted_count"] == expected_count
+        assert status_data["status"] == "persisted"
+
+        # 4. Verify each record in DB
+        for tid in tx_ids:
+            db_row = db.get_transaction(tid)
+            assert db_row is not None, f"Transaction {tid} was not found in database"
+            assert db_row["transaction_id"] == tid
+            assert db_row.get("final_fraud_score") is not None
+            assert db_row.get("fraud_decision") in ("LEGITIMATE", "SUSPICIOUS", "FRAUD")
+            assert db_row.get("authorization_status") == "PENDING"
+
+    # 5. Verify newest-first ordering on recent transactions
+    recent = client.get("/api/v1/transactions/recent?limit=20", headers=admin_headers).json()
+    assert len(recent) > 0
+    # Latest injected transactions should be at the front
+    all_injected_ids = set()
+    for s_name, _ in scenarios_to_test:
+        # Check ordering of ingested_at timestamps
+        pass
+    for i in range(len(recent) - 1):
+        ts_cur = recent[i].get("ingested_at") or recent[i].get("timestamp") or ""
+        ts_next = recent[i+1].get("ingested_at") or recent[i+1].get("timestamp") or ""
+        assert ts_cur >= ts_next, f"Ordering violation: {ts_cur} < {ts_next}"
+

@@ -1136,7 +1136,7 @@ def simulate_traffic(
     raw_txns = []
 
     if scenario in ("RAPID_BURST", "RAPID_TRANSACTION_BURST"):
-        raw_txns = generator.generate_scenario_rapid_burst(card_id=cid, count=payload.count or 6)
+        raw_txns = generator.generate_scenario_rapid_burst(card_id=cid, count=payload.count or 5)
     elif scenario in ("IMPOSSIBLE_TRAVEL", "TRAVEL_ANOMALY"):
         raw_txns = generator.generate_scenario_impossible_travel(card_id=cid or "CARD_012")
     elif scenario in ("HIGH_VALUE_SPIKE", "HIGH_AMOUNT"):
@@ -1185,48 +1185,139 @@ def simulate_traffic(
                 failed_count += 1
 
         producer.flush()
+        status_label = "published_awaiting_processing" if published_count > 0 else "failed"
         return {
-            "status": "success",
+            "status": status_label,
             "scenario": scenario,
             "route": "kafka",
             "delivery_mode": "kafka",
             "topic": KAFKA_CANONICAL_TOPIC,
+            "generated_count": len(raw_txns),
             "transactions_published": published_count,
             "published_count": published_count,
-            "failed_count": failed_count,
+            "processed_count": 0,
             "persisted_count": 0,
+            "failed_count": failed_count,
+            "deduplicated_count": 0,
+            "stages": {
+                "generated": len(raw_txns),
+                "published": published_count,
+                "processed": 0,
+                "persisted": 0,
+                "failed": failed_count,
+                "deduplicated": 0
+            },
             "kafka_connected": producer.is_connected,
-            "message": f"Successfully published {published_count} transactions to Kafka topic '{KAFKA_CANONICAL_TOPIC}'.",
+            "message": f"Successfully published {published_count} transactions to Kafka topic '{KAFKA_CANONICAL_TOPIC}'. Awaiting Spark Structured Streaming processing.",
             "note": "Events published to Kafka canonical topic. Genuine Spark Structured Streaming pipeline processes and persists events asynchronously.",
+            "transaction_ids": [t["transaction_id"] for t in published_txns],
             "transactions": published_txns
         }
 
     # Default in-process processing
     results = []
     persisted_count = 0
+    failed_count = 0
+    dedup_count = 0
     for t in raw_txns:
         if not t.get("authorization_status"):
             t["authorization_status"] = "PENDING"
-        res = processor.process_transaction(t)
-        if res.get("persisted_to_db"):
-            persisted_count += 1
-        results.append(res)
+        try:
+            res = processor.process_transaction(t)
+            if res.get("is_duplicate"):
+                dedup_count += 1
+            if res.get("persisted_to_db"):
+                persisted_count += 1
+            else:
+                failed_count += 1
+            results.append(res)
+        except Exception as e:
+            failed_count += 1
+            results.append({
+                "transaction_id": t.get("transaction_id"),
+                "card_id": t.get("card_id"),
+                "amount": t.get("amount"),
+                "error": str(e),
+                "persisted_to_db": False
+            })
 
     for r in results:
         if "card_id" in r and "masked_card_id" not in r:
             r["masked_card_id"] = mask_card_id(r["card_id"])
 
+    total_tx = len(results)
+    if persisted_count == total_tx and total_tx > 0:
+        overall_status = "success"
+        msg = f"Processed & persisted {persisted_count} transaction(s) through canonical ML & rule pipeline."
+    elif persisted_count > 0:
+        overall_status = "partial"
+        msg = f"Processed {total_tx} transaction(s), partially persisted: {persisted_count}/{total_tx}."
+    else:
+        overall_status = "failed"
+        msg = f"Processed {total_tx} transaction(s), but persistence failed (0 persisted)."
+
     return {
-        "status": "success",
+        "status": overall_status,
         "scenario": scenario,
         "route": "in-process",
         "delivery_mode": "in_process",
-        "processed_count": len(results),
-        "transactions_published": len(results),
+        "generated_count": len(raw_txns),
+        "processed_count": total_tx,
+        "transactions_published": total_tx,
         "persisted_count": persisted_count,
+        "failed_count": failed_count,
+        "deduplicated_count": dedup_count,
+        "stages": {
+            "generated": len(raw_txns),
+            "published": 0,
+            "processed": total_tx,
+            "persisted": persisted_count,
+            "failed": failed_count,
+            "deduplicated": dedup_count
+        },
         "scores": results,
-        "message": f"Injected and scored {len(results)} transactions (persisted: {persisted_count}).",
+        "message": msg,
+        "transaction_ids": [r.get("transaction_id") for r in results if r.get("transaction_id")],
         "transactions": results
+    }
+
+@app.get("/api/v1/simulate/status")
+def get_simulation_status(
+    ids: str = Query(..., description="Comma-separated transaction IDs"),
+    auth_ctx: Dict[str, Any] = Depends(require_roles(["admin", "fraud_investigator"]))
+):
+    """
+    Checks the persistence and scoring status of injected transactions by ID.
+    Used by the UI to verify asynchronous Kafka -> Spark streaming pipeline persistence.
+    """
+    tx_ids = [i.strip() for i in ids.split(",") if i.strip()]
+    if not tx_ids:
+        return {"total": 0, "persisted_count": 0, "status": "empty", "transactions": []}
+
+    records = []
+    persisted_count = 0
+    for tid in tx_ids:
+        rec = db_client.get_transaction(tid)
+        if rec:
+            persisted_count += 1
+            r_copy = dict(rec)
+            if "card_id" in r_copy and "masked_card_id" not in r_copy:
+                r_copy["masked_card_id"] = mask_card_id(r_copy["card_id"])
+            records.append(r_copy)
+
+    total = len(tx_ids)
+    if persisted_count == total and total > 0:
+        st = "persisted"
+    elif persisted_count > 0:
+        st = "partial"
+    else:
+        st = "awaiting_processing"
+
+    return {
+        "total": total,
+        "persisted_count": persisted_count,
+        "status": st,
+        "transactions": records
     }
 
 @app.get("/api/v1/models/info")

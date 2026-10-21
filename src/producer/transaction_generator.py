@@ -5,6 +5,7 @@ Generates baseline cardholder spending and concrete fraud attack vectors
 (account takeover, velocity bursts, impossible travel, high-value spikes, card testing).
 """
 
+import time
 import uuid
 import random
 from datetime import datetime, timedelta, timezone
@@ -63,8 +64,14 @@ class TransactionGenerator:
     def __init__(self, seed: Optional[int] = 42):
         if seed:
             random.seed(seed)
-        self.tx_counter = 10000
+        self.tx_counter = int(time.time() * 1000) % 1000000
         self.profiles = CARDHOLDERS
+
+    def _next_tx_id(self, prefix: str = "TX") -> str:
+        self.tx_counter += 1
+        ts_part = datetime.now(timezone.utc).strftime("%y%m%d%H%M%S")
+        rand_part = uuid.uuid4().hex[:6].upper()
+        return f"{prefix}_{ts_part}_{self.tx_counter % 100000:05d}_{rand_part}"
 
     def _build_canonical_payload(self,
                                  txn_id: str,
@@ -112,9 +119,11 @@ class TransactionGenerator:
             "is_demo": True
         }
 
-    def generate_normal_transaction(self, card_id: Optional[str] = None, timestamp: Optional[datetime] = None) -> Dict[str, Any]:
+    def generate_normal_transaction(self,
+                                    card_id: Optional[str] = None,
+                                    timestamp: Optional[datetime] = None,
+                                    txn_id: Optional[str] = None) -> Dict[str, Any]:
         """Generate regular, legitimate transaction fitting customer profile."""
-        self.tx_counter += 1
         if not card_id or card_id not in self.profiles:
             card_id = random.choice(list(self.profiles.keys()))
 
@@ -127,7 +136,7 @@ class TransactionGenerator:
         city = profile["home_location"]
 
         return self._build_canonical_payload(
-            txn_id=f"TX{self.tx_counter}",
+            txn_id=txn_id or self._next_tx_id("TX_NORM"),
             card_id=card_id,
             amount=amount,
             merchant_name=merchant,
@@ -137,17 +146,17 @@ class TransactionGenerator:
             scenario="NORMAL_SPEND"
         )
 
-    def generate_scenario_rapid_burst(self, card_id: str = "CARD_007", count: int = 7) -> List[Dict[str, Any]]:
-        """Scenario: Rapid transactions (>5 txns within 2 minutes)."""
+    def generate_scenario_rapid_burst(self, card_id: str = "CARD_007", count: int = 5) -> List[Dict[str, Any]]:
+        """Scenario: Rapid transactions (5 transactions within 60 seconds)."""
         txns = []
+        effective_count = count or 5
         now = datetime.now(timezone.utc)
-        base_time = now - timedelta(seconds=max(0, (count - 1) * 12))
+        base_time = now - timedelta(seconds=max(0, (effective_count - 1) * 10))
         city = self.profiles.get(card_id, {}).get("home_location", "Chicago")
-        for i in range(count):
-            self.tx_counter += 1
-            t_time = base_time + timedelta(seconds=i * 12)
+        for i in range(effective_count):
+            t_time = base_time + timedelta(seconds=i * 10)
             txns.append(self._build_canonical_payload(
-                txn_id=f"TX{self.tx_counter}",
+                txn_id=self._next_tx_id("TX_BURST"),
                 card_id=card_id,
                 amount=round(random.uniform(40.0, 95.0), 2),
                 merchant_name="OnlineStore",
@@ -160,10 +169,9 @@ class TransactionGenerator:
 
     def generate_scenario_impossible_travel(self, card_id: str = "CARD_012") -> List[Dict[str, Any]]:
         """Scenario: Two transactions from geographically distant locations within a short period."""
-        self.tx_counter += 1
         t1 = datetime.now(timezone.utc) - timedelta(minutes=15)
         first_txn = self._build_canonical_payload(
-            txn_id=f"TX{self.tx_counter}",
+            txn_id=self._next_tx_id("TX_TRAVEL"),
             card_id=card_id,
             amount=35.50,
             merchant_name="Starbucks",
@@ -173,10 +181,9 @@ class TransactionGenerator:
             scenario="NORMAL_SPEND"
         )
 
-        self.tx_counter += 1
         t2 = datetime.now(timezone.utc)
         second_txn = self._build_canonical_payload(
-            txn_id=f"TX{self.tx_counter}",
+            txn_id=self._next_tx_id("TX_TRAVEL"),
             card_id=card_id,
             amount=420.00,
             merchant_name="LuxuryJewelry",
@@ -189,13 +196,12 @@ class TransactionGenerator:
 
     def generate_scenario_high_value_spike(self, card_id: str = "CARD_005") -> Dict[str, Any]:
         """Scenario: High-value abnormal transaction significantly above customer normal spending (>6x)."""
-        self.tx_counter += 1
         normal_base = self.profiles.get(card_id, {}).get("base_amount", 60.0)
         city = self.profiles.get(card_id, {}).get("home_location", "San Francisco")
         spike_amount = round(normal_base * 6.5, 2)
 
         return self._build_canonical_payload(
-            txn_id=f"TX{self.tx_counter}",
+            txn_id=self._next_tx_id("TX_SPIKE"),
             card_id=card_id,
             amount=spike_amount,
             merchant_name="CryptoExchange",
@@ -206,18 +212,19 @@ class TransactionGenerator:
         )
 
     def generate_scenario_account_takeover(self, card_id: str = "CARD_018") -> Dict[str, Any]:
-        """Scenario: Account takeover (3 AM, overseas casino, high amount)."""
-        self.tx_counter += 1
-        now = datetime.now(timezone.utc).replace(hour=3, minute=18, second=42, microsecond=0)
+        """Scenario: Account takeover (3 AM off-cycle, overseas casino, high amount)."""
+        now = datetime.now(timezone.utc)
+        days_back = 0 if now.hour >= 3 else 1
+        txn_ts = (now - timedelta(days=days_back)).replace(hour=3, minute=18, second=42, microsecond=0)
         normal_base = self.profiles.get(card_id, {}).get("base_amount", 70.0)
 
         return self._build_canonical_payload(
-            txn_id=f"TX{self.tx_counter}",
+            txn_id=self._next_tx_id("TX_ATO"),
             card_id=card_id,
             amount=round(normal_base * 5.2, 2),
             merchant_name="OverseasCasino",
             city="Tokyo",
-            timestamp=now,
+            timestamp=txn_ts,
             status="SUCCESS",
             scenario="ACCOUNT_TAKEOVER"
         )
@@ -227,10 +234,9 @@ class TransactionGenerator:
         txns = []
         base_time = datetime.now(timezone.utc) - timedelta(minutes=6)
         for i in range(2):
-            self.tx_counter += 1
             t_time = base_time + timedelta(minutes=i * 2)
             txns.append(self._build_canonical_payload(
-                txn_id=f"TX{self.tx_counter}",
+                txn_id=self._next_tx_id("TX_DECLINE"),
                 card_id=card_id,
                 amount=round(random.uniform(5.0, 15.0), 2),
                 merchant_name="HighEndElectronics",
@@ -240,9 +246,8 @@ class TransactionGenerator:
                 scenario="CARD_TESTING_DECLINED"
             ))
 
-        self.tx_counter += 1
         txns.append(self._build_canonical_payload(
-            txn_id=f"TX{self.tx_counter}",
+            txn_id=self._next_tx_id("TX_RECOVERY"),
             card_id=card_id,
             amount=1450.00,
             merchant_name="HighEndElectronics",
@@ -253,18 +258,18 @@ class TransactionGenerator:
         ))
         return txns
 
-    def generate_scenario_card_swarm(self, merchant_name: str = "OnlineStore", count: int = 4) -> List[Dict[str, Any]]:
+    def generate_scenario_card_swarm(self, merchant_name: str = "LuxuryJewelry", count: int = 4) -> List[Dict[str, Any]]:
         """Scenario: Multiple distinct cards used at the same merchant within 5 minutes (RULE_6_MERCHANT_CARD_SWARM)."""
         txns = []
+        effective_count = count or 4
         now = datetime.now(timezone.utc)
-        base_time = now - timedelta(seconds=max(0, (count - 1) * 15))
+        base_time = now - timedelta(seconds=max(0, (effective_count - 1) * 15))
         card_pool = [f"CARD_{i:03d}" for i in range(1, 30)]
-        swarm_cards = random.sample(card_pool, max(4, min(count, len(card_pool))))
+        swarm_cards = random.sample(card_pool, max(4, min(effective_count, len(card_pool))))
         for i, cid in enumerate(swarm_cards):
-            self.tx_counter += 1
             t_time = base_time + timedelta(seconds=i * 15)
             txns.append(self._build_canonical_payload(
-                txn_id=f"TX{self.tx_counter}",
+                txn_id=self._next_tx_id("TX_SWARM"),
                 card_id=cid,
                 amount=round(random.uniform(65.0, 180.0), 2),
                 merchant_name=merchant_name,
