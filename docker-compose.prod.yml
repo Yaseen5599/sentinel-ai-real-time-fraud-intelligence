@@ -70,6 +70,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
+      args:
+        http_proxy: ${HTTP_PROXY:-http://http.docker.internal:3128}
+        https_proxy: ${HTTPS_PROXY:-http://http.docker.internal:3128}
+    image: bdpproject-api:latest
     container_name: sentinel_api
     restart: always
     depends_on:
@@ -79,6 +83,8 @@ services:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       ENVIRONMENT: production
       SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET}
@@ -92,15 +98,19 @@ services:
       - sentinel_logs:/app/logs
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/health || exit 1"]
-      interval: 15s
+      interval: 10s
       timeout: 5s
-      retries: 3
-      start_period: 10s
+      retries: 4
+      start_period: 30s
 
   streaming:
     build:
       context: .
       dockerfile: Dockerfile.spark
+      args:
+        http_proxy: ${HTTP_PROXY:-http://http.docker.internal:3128}
+        https_proxy: ${HTTPS_PROXY:-http://http.docker.internal:3128}
+    image: bdpproject-streaming:latest
     container_name: sentinel_streaming_worker
     restart: always
     depends_on:
@@ -108,6 +118,8 @@ services:
         condition: service_healthy
       init-kafka:
         condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       ENVIRONMENT: production
       DATABASE_URL: ${DATABASE_URL:-postgresql://${FRAUD_DB_USER:-fraud_user}:${FRAUD_DB_PASSWORD:-fraud_password}@postgres:5432/${FRAUD_DB_NAME:-fraud_db}}
