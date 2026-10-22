@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from src.streaming.spark_streaming_pipeline import RealTimeStreamProcessor
 from src.producer.transaction_generator import TransactionGenerator
 from src.database.db_client import DatabaseClient
+from src.api.transaction_risk_analysis import TransactionRiskAnalysisService
 
 app = FastAPI(
     title="Sentinel AI — Real-Time Financial Fraud Intelligence API",
@@ -281,6 +282,15 @@ class LoginResponse(BaseModel):
     expires_in: int
     user: Dict[str, Any]
 
+class TransactionRiskAnalysisRequest(BaseModel):
+    transaction_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=32,
+        description="Transaction identifier to analyze (e.g. T00001 to T10000)",
+        json_schema_extra={"example": "T00001"}
+    )
+
 # ------------------------------------------------------------------------------
 # API Endpoints
 # ------------------------------------------------------------------------------
@@ -490,6 +500,74 @@ def authorize_transaction(
         "authorized_by": approver,
         "authorized_at": updated_copy.get("authorized_at") or datetime.now(timezone.utc).isoformat(),
         "transaction": updated_copy
+    }
+
+# ------------------------------------------------------------------------------
+# Milestone: Transaction Risk Analysis (10,000 Dataset & Hybrid Pipeline)
+# ------------------------------------------------------------------------------
+
+@app.post("/api/v1/transaction-risk-analysis", tags=["Transaction Risk Analysis"])
+def analyze_transaction_risk(
+    req: TransactionRiskAnalysisRequest,
+    auth_ctx: Dict[str, Any] = Depends(require_roles(["admin", "fraud_investigator"]))
+):
+    """
+    Analyzes an individual transaction from the 10,000 synthetic benchmark dataset.
+    Executes Canonical Feature Extraction (zero future leakage), production Random Forest ML inference,
+    Personalized Customer Behavioral Baseline Scorer, and Deterministic Fraud Rules Engine.
+    Returns comprehensive four-card score breakdowns, mathematical arithmetic verification,
+    and plain-English audit explanations.
+    Restricted strictly to administrators and fraud investigators.
+    """
+    raw_id = req.transaction_id.strip()
+
+    # Input sanitization: reject path traversal and malicious SQL fragments
+    import re
+    if not re.match(r"^[A-Za-z0-9_-]{1,32}$", raw_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid transaction ID format. Must be an alphanumeric identifier such as 'T00001'."
+        )
+
+    service = TransactionRiskAnalysisService.get_instance()
+    try:
+        result = service.analyze_transaction(raw_id)
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Transaction risk analysis dataset unavailable: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to execute risk analysis pipeline: {str(e)}"
+        )
+
+    if not result.get("found"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=result.get("error", f"Transaction '{raw_id}' was not found in dataset.")
+        )
+
+    return result
+
+@app.get("/api/v1/transaction-risk-analysis/sample-ids", tags=["Transaction Risk Analysis"])
+def get_sample_transaction_ids(
+    auth_ctx: Dict[str, Any] = Depends(require_roles(["admin", "fraud_investigator"]))
+):
+    """
+    Provides curated sample transaction IDs covering Legitimate, Suspicious, and High-Risk classifications
+    for convenient examiner exploration and interactive validation.
+    """
+    return {
+        "samples": [
+            {"id": "T00001", "label": "T00001 (Normal Spend)", "category": "LEGITIMATE"},
+            {"id": "T00059", "label": "T00059 (Suspicious Spike)", "category": "SUSPICIOUS"},
+            {"id": "T00199", "label": "T00199 (Velocity Anomaly)", "category": "SUSPICIOUS"},
+            {"id": "T00277", "label": "T00277 (High Risk Fraud Alert)", "category": "HIGH_RISK"},
+            {"id": "T05000", "label": "T05000 (Mid-Sequence Baseline)", "category": "LEGITIMATE"},
+            {"id": "T10000", "label": "T10000 (Boundary Transaction)", "category": "LEGITIMATE"}
+        ]
     }
 
 @app.get("/api/v1/analytics/kpis")

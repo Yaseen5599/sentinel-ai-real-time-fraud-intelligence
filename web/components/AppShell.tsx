@@ -23,7 +23,8 @@ import {
   Radio,
   CheckCircle2,
   Clock,
-  ExternalLink
+  ExternalLink,
+  SearchCheck
 } from 'lucide-react'
 import { useAuth } from '../lib/AuthContext'
 import { api } from '../lib/api'
@@ -96,6 +97,7 @@ export const AppShell: React.FC<AppShellProps> = ({
     { label: 'Transaction Explorer', href: '/transactions', icon: CreditCard },
     { label: 'Investigation Workspace', href: '/investigations', icon: UserCheck },
     { label: 'Model Intelligence', href: '/analytics', icon: Cpu },
+    { label: 'Transaction Risk Analysis', href: '/risk-analysis', icon: SearchCheck },
     { label: 'Pipeline Monitoring', href: '/pipeline', icon: Activity },
     { label: 'User & Access RBAC', href: '/admin/users', icon: Users },
   ]
@@ -105,6 +107,7 @@ export const AppShell: React.FC<AppShellProps> = ({
     { label: 'Transaction Explorer', href: '/transactions', icon: CreditCard },
     { label: 'Investigation Workspace', href: '/investigations', icon: UserCheck },
     { label: 'Model Intelligence', href: '/analytics', icon: Cpu },
+    { label: 'Transaction Risk Analysis', href: '/risk-analysis', icon: SearchCheck },
   ]
 
   const customerNav = [
