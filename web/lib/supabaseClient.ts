@@ -76,12 +76,23 @@ export const loginAnalyst = async (
   }
 
   // 2. Gateway authentication: verify credentials against trusted store (never client-supplied role)
-  const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
-  const res = await fetch(`${apiBase}/api/v1/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password })
-  })
+  const apiBase = (process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
+  let res: Response
+  try {
+    res = await fetch(`${apiBase}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    })
+  } catch (err: any) {
+    if (err instanceof TypeError || err.message === 'Load failed' || err.message === 'Failed to fetch') {
+      throw new Error(
+        `Unable to reach authentication gateway at ${apiBase}. ` +
+        `This typically indicates a network error, service cold-start, or CORS origin restriction.`
+      )
+    }
+    throw err
+  }
 
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}))
@@ -97,7 +108,7 @@ export const verifyCurrentSession = async (): Promise<AuthenticatedUser | null> 
   const token = getStoredToken()
   if (!token) return null
 
-  const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
+  const apiBase = (process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
   try {
     const res = await fetch(`${apiBase}/api/v1/auth/me`, {
       headers: { Authorization: `Bearer ${token}` }

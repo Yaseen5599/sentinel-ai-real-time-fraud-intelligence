@@ -1,0 +1,6 @@
+SUPABASE_DB_URL=postgresql://postgres:Az%407306423517@db.ixrwbfvsoqkxzmnfsuuq.supabase.co:6543/postgres
+DATABASE_URL=postgresql://postgres:Az%407306423517@host.docker.internal:6543/postgres?sslmode=require
+NEXT_PUBLIC_SUPABASE_URL=https://ixrwbfvsoqkxzmnfsuuq.supabase.co
+SUPABASE_JWT_SECRET=Mlk1s3OqosbwHLsgcqRrsWPxeRIfo4WdRxmJdgGAEbEchT9ekYHFStPatX0v6XjooaDryDXjavxq7u10/pNT+A==
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_alz4qAImFKruDw2YtkYA3Q_x-f45KmX
+NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_alz4qAImFKruDw2YtkYA3Q_x-f45KmX

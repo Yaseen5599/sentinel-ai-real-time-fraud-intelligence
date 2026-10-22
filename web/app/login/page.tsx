@@ -45,7 +45,12 @@ export default function LoginPage() {
         }
       }, 500)
     } catch (err: any) {
-      setError(err.message || 'Authentication failed. Please verify credentials.')
+      const msg = err?.message || 'Authentication failed. Please verify credentials.'
+      setError(
+        msg === 'Load failed' || msg === 'Failed to fetch'
+          ? 'Network or CORS connection failed. Please ensure the backend is reachable and allows requests from this domain.'
+          : msg
+      )
     } finally {
       setIsLoading(false)
     }

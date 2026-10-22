@@ -35,22 +35,31 @@ app = FastAPI(
 )
 
 # CORS configuration restricted to authorized frontend origins
+DEFAULT_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "https://sentinel-ai-real-time-fraud-intelli.vercel.app",
+    "https://sentinel-ai-real-time-fraud-intelligence.vercel.app",
+]
+
 allowed_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "")
-allowed_origins = [orig.strip() for orig in allowed_origins_env.split(",") if orig.strip()]
-if not allowed_origins:
-    allowed_origins = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000"
-    ]
+env_origins = [orig.strip() for orig in allowed_origins_env.split(",") if orig.strip()]
+# Union of defaults and explicitly configured origins without duplicates
+allowed_origins = list(dict.fromkeys(DEFAULT_ALLOWED_ORIGINS + env_origins))
+
+# Regex matching authorized Sentinel AI Vercel production and preview deployments
+ALLOWED_ORIGIN_REGEX = r"^https:\/\/sentinel-ai(-[a-zA-Z0-9_-]+)?\.vercel\.app$"
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 processor = RealTimeStreamProcessor(use_canonical=True)
